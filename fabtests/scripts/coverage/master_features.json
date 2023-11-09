@@ -1,0 +1,143 @@
+{
+    "attributes": {
+        "fi_tx_attr": [
+            "caps",
+            "mode = xf_mode",
+            "msg_order",
+			"iov_limit"
+        ],
+        "fi_rx_attr": [
+            "caps",
+            "mode = xf_mode",
+            "msg_order",
+			"iov_limit"
+        ],
+        "fi_ep_attr": [
+            "type=ep_type",
+			"rx_ctx_cnt"
+        ],
+        "fi_domain_attr": [
+            "mr_mode", 
+            "caps"
+        ],
+        "fi_av_attr": [
+        ],
+        "fi_mr_attr": [
+			"access=mr_access",
+            "iface"
+        ],
+        "fi_cq_attr": [
+            "format = cq_format"
+        ]
+    },
+
+    "features" : {
+        "ep_type": [
+            "FI_EP_DGRAM",
+            "FI_EP_MSG",
+            "FI_EP_RDM"
+        ],
+
+        "caps": [
+            "FI_ATOMIC",
+			"FI_AV_USER_ID",
+            "FI_DIRECTED_RECV",
+            "FI_FENCE",
+			"FI_HMEM",
+			"FI_LOCAL_COMM",
+            "FI_MSG",
+            "FI_MULTI_RECV",
+            "FI_NAMED_RX_CTX",
+            "FI_READ",
+            "FI_RECV",
+			"FI_REMOTE_COMM",
+            "FI_REMOTE_READ",
+            "FI_REMOTE_WRITE",
+            "FI_RMA",
+            "FI_RMA_EVENT",
+			"FI_RMA_PMEM",
+            "FI_SEND",
+			"FI_SHARED_AV",
+            "FI_SOURCE",
+            "FI_SOURCE_ERR",
+            "FI_TAGGED",
+            "FI_TRIGGER",
+			"FI_VARIABLE_MSG",
+            "FI_WRITE",
+			"FI_XPU"
+        ],
+
+        "xf_mode": [
+            "FI_CONTEXT",
+            "FI_CONTEXT2",
+            "FI_RX_CQ_DATA"
+        ],
+
+		"iov_limit": [
+			"(>1)"
+		],
+	
+		"rx_ctx_cnt": [
+			"1",
+			"FI_SHARED_CONTEXT"
+		],
+			
+        "cq_format": [
+            "FI_CQ_FORMAT_CONTEXT",
+            "FI_CQ_FORMAT_DATA",
+            "FI_CQ_FORMAT_MSG",
+            "FI_CQ_FORMAT_TAGGED"
+        ],
+
+        "mr_mode": [
+            "FI_MR_LOCAL",
+            "FI_MR_RAW",
+            "FI_MR_VIRT_ADDR",
+            "FI_MR_ALLOCATED",
+            "FI_MR_PROV_KEY",
+            "FI_MR_MMU_NOTIFY",
+            "FI_MR_HMEM"
+        ],
+
+
+        "mr_access": [
+            "FI_RECV",
+            "FI_READ",
+            "FI_REMOTE_READ",
+            "FI_SEND",
+            "FI_WRITE",
+            "FI_REMOTE_WRITE"
+        ],
+
+        "iface": [
+            "FI_HMEM_SYSTEM",
+            "FI_HMEM_ZE"
+        ],
+
+        "cntr_event": [
+            "FI_CNTR_EVENTS_COMP"
+        ],
+
+        "msg_order": [
+            "FI_ORDER_RAR",
+            "FI_ORDER_RAW",
+            "FI_ORDER_RAS",
+            "FI_ORDER_WAR",
+            "FI_ORDER_WAW",
+            "FI_ORDER_WAS",
+            "FI_ORDER_SAR",
+            "FI_ORDER_SAW",
+            "FI_ORDER_SAS",
+            "FI_ORDER_RMA_RAR",
+            "FI_ORDER_RMA_RAW",
+            "FI_ORDER_RMA_WAR",
+            "FI_ORDER_RMA_WAW",
+            "FI_ORDER_ATOMIC_RAR",
+            "FI_ORDER_ATOMIC_RAW",
+            "FI_ORDER_ATOMIC_WAR",
+            "FI_ORDER_ATOMIC_WAW"
+        ]
+    }
+}
+
+
