@@ -62,6 +62,11 @@ static int rxm_fabric_close(fid_t fid)
 	fi_freeinfo(rxm_fabric->offload_coll_info);
 	fi_freeinfo(rxm_fabric->util_coll_info);
 
+	if (rxm_fabric->shm_fabric)
+		fi_close(&rxm_fabric->shm_fabric->fid);
+
+	fi_freeinfo(rxm_fabric->shm_info);
+
 	ret = fi_close(&rxm_fabric->msg_fabric->fid);
 	if (ret)
 		return ret;
@@ -139,6 +144,78 @@ static int rxm_fabric_init_offload_coll(struct rxm_fabric *fabric)
 				    &fabric->offload_coll_fabric);
 }
 
+int rxm_fabric_init_shm(struct rxm_fabric *fabric, struct fi_info *info)
+{
+	struct fi_info *hints, *shm_info;
+	struct fid_fabric *fabric_fid;
+	int ret;
+
+	char buf[8192];
+	memset(buf, 0, 8192);
+	fi_tostr_r(buf, 8192, info, FI_TYPE_INFO);
+	printf("info:\n%s\n", buf);
+
+	hints = fi_allocinfo();
+	if (!hints)
+		return -FI_ENOMEM;
+
+	hints->fabric_attr->name = strdup("shm");
+	hints->fabric_attr->prov_name = strdup("shm");
+	if (!hints->fabric_attr->name ||
+	    !hints->fabric_attr->prov_name) {
+		fi_freeinfo(hints);
+		return -FI_ENOMEM;
+	}
+
+	hints->mode = FI_PEER_TRANSFER;
+
+//	hints->caps = info->caps;
+/* SHM enable this will cause rxm_open_core_res() failed.
+	*hints->tx_attr = *info->tx_attr;
+	*hints->rx_attr = *info->rx_attr;
+	*hints->ep_attr = *info->ep_attr;
+	*hints->domain_attr = *info->domain_attr;
+*/
+	// add FI_MR_LOCAL| FI_MR_HMEM
+	hints->domain_attr->mr_mode = FI_MR_LOCAL| FI_MR_HMEM |
+				      info->domain_attr->mr_mode;
+	info->domain_attr->mr_mode;
+	hints->domain_attr->mr_mode = info->domain_attr->mr_mode;
+	hints->domain_attr->caps = FI_LOCAL_COMM;
+	hints->ep_attr->protocol = FI_PROTO_UNSPEC;
+	hints->ep_attr->protocol_version = 0;
+	hints->tx_attr->size = 1024;
+	hints->rx_attr->size = 1024;
+
+	ret = fi_getinfo(fi_version(), NULL, NULL, OFI_GETINFO_HIDDEN,
+	                  hints, &shm_info);
+	fi_freeinfo(hints);
+	if (ret)
+		goto err;
+	memset(buf, 0, 4096);
+	fi_tostr_r(buf, 4096, shm_info, FI_TYPE_INFO);
+	printf("shm_info:\n%s\n", buf);
+
+	ret = fi_fabric(shm_info->fabric_attr, &fabric_fid, NULL);
+	printf("shm fi_fabric: ret %d\n", ret);
+	if (ret) {
+		fi_freeinfo(shm_info);
+		goto err;
+	}
+
+	fabric->shm_info = shm_info;
+	fabric->shm_fabric = fabric_fid;
+	return FI_SUCCESS;
+
+err:
+	rxm_enable_shm = 0;
+	fabric->shm_fabric = NULL;
+	FI_WARN(&rxm_prov, FI_LOG_CORE,
+		"shm open fabric failed (%s). Disabling shm offload\n",
+		fi_strerror(-ret));
+	return ret;
+}
+
 int rxm_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric,
 	       void *context)
 {
@@ -174,6 +251,13 @@ int rxm_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric,
 	ret = rxm_fabric_init_offload_coll(rxm_fabric);
 	if (ret && ret != -FI_ENODATA)
 		goto err5;
+/* init in domain
+	if (rxm_enable_shm) {
+		ret = rxm_fabric_init_shm(rxm_fabric);
+		if (ret && ret != -FI_ENODATA)
+			goto err6;
+	}
+*/
 
 	*fabric = &rxm_fabric->util_fabric.fabric_fid;
 	(*fabric)->fid.ops = &rxm_fabric_fi_ops;
@@ -182,6 +266,9 @@ int rxm_fabric(struct fi_fabric_attr *attr, struct fid_fabric **fabric,
 	fi_freeinfo(msg_info);
 	return 0;
 
+err6:
+	fi_close(&rxm_fabric->offload_coll_fabric->fid);
+	fi_freeinfo(rxm_fabric->offload_coll_info);
 err5:
 	fi_close(&rxm_fabric->util_coll_fabric->fid);
 	fi_freeinfo(rxm_fabric->util_coll_info);

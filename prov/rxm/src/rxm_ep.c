@@ -1275,6 +1275,17 @@ static int rxm_ep_close(struct fid *fid)
 		ep->offload_coll_ep = NULL;
 	}
 
+	// SHM
+	if (ep->shm_ep) {
+		ret = fi_close(&ep->shm_ep->fid);
+		if (ret) {
+			FI_WARN(&rxm_prov, FI_LOG_EP_CTRL,
+				"Unable to close shm EP\n");
+			return ret;
+		}
+		ep->shm_ep = NULL;
+	}
+
 	free(ep->inject_pkt);
 	ofi_endpoint_close(&ep->util_ep);
 	fi_freeinfo(ep->msg_info);
@@ -1533,6 +1544,53 @@ err:
 	return ret;
 }
 
+static int
+rxm_enable_shm_ep(struct rxm_ep *rxm_ep)
+{
+	int ret = 0;
+	char shm_name[NAME_MAX];//fix
+	size_t shm_name_len = NAME_MAX;
+	struct rxm_domain *rxm_domain;
+	struct fi_peer_srx_context peer_srx_context = {
+		.size = sizeof(peer_srx_context),
+	};
+
+	rxm_domain = container_of(rxm_ep->util_ep.domain,
+				  struct rxm_domain, util_domain);
+
+	ofi_straddr(shm_name, &shm_name_len,
+		    rxm_domain->util_domain.addr_format,
+		    rxm_domain->util_domain.src_addr);
+	ret = fi_setname(&rxm_ep->shm_ep->fid, shm_name, shm_name_len);
+
+	if (!ret && rxm_ep->srx) {
+		struct fid_peer_srx *peer_srx;
+		peer_srx = container_of(rxm_ep->srx, struct fid_peer_srx,
+					ep_fid);
+		ret = fi_ep_bind(rxm_ep->shm_ep, &(peer_srx->ep_fid.fid),
+				 FI_RECV);
+/*
+		memset(&rx_attr, 0, sizeof(rx_attr));
+		rx_attr.op_flags = FI_PEER;
+		peer_srx_context.srx = container_of(rxm_ep->srx,
+						    struct fid_peer_srx,
+						    ep_fid);
+		ret = fi_srx_context(rxm_domain->shm_domain, &rx_attr,
+	                &rxm_ep->shm_srx, &peer_srx_context);
+		if (!ret)
+			ret = fi_ep_bind(rxm_ep->shm_ep,
+					 &rxm_ep->shm_srx->fid, 0);
+*/
+		if (!ret)
+			ret = fi_control(&rxm_ep->shm_ep->fid, FI_ENABLE, NULL);
+	}
+	if (ret)
+		FI_WARN(&rxm_prov, FI_LOG_FABRIC,
+			"rxm open shm_ep res failed, ret %d\n", ret);
+	return ret;
+}
+
+
 static int rxm_ep_enable_check(struct rxm_ep *rxm_ep)
 {
 	if (!rxm_ep->util_ep.av)
@@ -1590,6 +1648,13 @@ static int rxm_ep_ctrl(struct fid *fid, int command, void *arg)
 				return ret;
 		}
 
+		//SHM
+		if (ep->shm_ep) {
+			ret = rxm_enable_shm_ep(ep);
+			if (ret)
+				goto err;
+		}
+
 		/* At the time of enabling endpoint, FI_OPT_BUFFERED_MIN,
 		 * FI_OPT_BUFFERED_LIMIT should have been frozen so we can
 		 * create the rendezvous protocol message pool with the right
@@ -1630,7 +1695,7 @@ static int rxm_ep_bind(struct fid *ep_fid, struct fid *bfid, uint64_t flags)
 
 	rxm_ep = container_of(ep_fid, struct rxm_ep, util_ep.ep_fid.fid);
 
-        ret = ofi_ep_bind(&rxm_ep->util_ep, bfid, flags);
+	ret = ofi_ep_bind(&rxm_ep->util_ep, bfid, flags);
 	if (ret)
 		return ret;
 
@@ -1647,6 +1712,13 @@ static int rxm_ep_bind(struct fid *ep_fid, struct fid *bfid, uint64_t flags)
 		if (rxm_ep->offload_coll_ep && rxm_av->offload_coll_av) {
 			ret = ofi_ep_fid_bind(&rxm_ep->offload_coll_ep->fid,
 					      &rxm_av->offload_coll_av->fid,
+					      flags);
+			if (ret)
+				retv = ret;
+		}
+		if (rxm_ep->shm_ep && rxm_av->shm_av) {
+			ret = ofi_ep_fid_bind(&rxm_ep->shm_ep->fid,
+					      &rxm_av->shm_av->fid,
 					      flags);
 			if (ret)
 				retv = ret;
@@ -1669,6 +1741,18 @@ static int rxm_ep_bind(struct fid *ep_fid, struct fid *bfid, uint64_t flags)
 			if (ret)
 				retv = ret;
 		}
+		if (rxm_ep->shm_ep && rxm_cq->shm_cq) {
+			static int count = 0;
+			ret = ofi_ep_fid_bind(&rxm_ep->shm_ep->fid,
+					      &rxm_cq->shm_cq->fid,
+					      flags);
+					      //FI_TRANSMIT | FI_RECV);
+			printf("shm_ep %p, bind to cq %p, flags 0x%lx, count %d, ret %d\n",
+				rxm_ep->shm_ep, rxm_cq->shm_cq, FI_TRANSMIT | FI_RECV,
+				count++, ret);
+			if (ret)
+				retv = ret;
+		}
 		break;
 
 	case FI_CLASS_EQ:
@@ -1683,6 +1767,13 @@ static int rxm_ep_bind(struct fid *ep_fid, struct fid *bfid, uint64_t flags)
 		if (rxm_ep->offload_coll_ep && rxm_eq->offload_coll_eq) {
 			ret = ofi_ep_fid_bind(&rxm_ep->offload_coll_ep->fid,
 					      &rxm_eq->offload_coll_eq->fid,
+					      flags);
+			if (ret)
+				retv = ret;
+		}
+		if (rxm_ep->shm_ep && rxm_eq->shm_eq) {
+			ret = ofi_ep_fid_bind(&rxm_ep->shm_ep->fid,
+					      &rxm_eq->shm_eq->fid,
 					      flags);
 			if (ret)
 				retv = ret;
@@ -1852,6 +1943,11 @@ struct rxm_rndv_ops rxm_rndv_ops_write = {
 	.defer_xfer = rxm_prepare_deferred_rndv_write
 };
 
+static void rxm_srx_update(struct util_srx_ctx *srx, struct util_rx_entry *rx_entry)
+{
+
+}
+
 int rxm_endpoint(struct fid_domain *domain, struct fi_info *info,
 		 struct fid_ep **ep_fid, void *context)
 {
@@ -1873,6 +1969,12 @@ int rxm_endpoint(struct fid_domain *domain, struct fi_info *info,
 		goto err1;
 	}
 
+	rxm_domain = container_of(domain, struct rxm_domain,
+	                  util_domain.domain_fid);
+	rxm_fabric = container_of(rxm_domain->util_domain.fabric,
+				  struct rxm_fabric,
+				  util_fabric.fabric_fid);
+
 	if (fi_param_get_int(&rxm_prov, "comp_per_progress",
 			     (int *)&rxm_ep->comp_per_progress))
 		rxm_ep->comp_per_progress = 1;
@@ -1884,11 +1986,6 @@ int rxm_endpoint(struct fid_domain *domain, struct fi_info *info,
 		if (ret)
 			goto err1;
 
-		rxm_domain = container_of(domain, struct rxm_domain,
-					  util_domain.domain_fid);
-		rxm_fabric = container_of(rxm_domain->util_domain.fabric,
-					  struct rxm_fabric,
-					  util_fabric.fabric_fid);
 		peer_context.ep = &rxm_ep->util_ep.ep_fid;
 		peer_context.info = info;
 		ret = fi_endpoint(rxm_domain->util_coll_domain,
@@ -1923,10 +2020,36 @@ int rxm_endpoint(struct fid_domain *domain, struct fi_info *info,
 	}
 
 	ret = rxm_open_core_res(rxm_ep);
+	printf("rxm_open_core_res ret %d\n", ret);
 	if (ret)
 		goto err2;
 
 	rxm_ep_settings_init(rxm_ep);
+
+	// SHM
+	if (rxm_domain->shm_domain) {
+		// need share ep? 
+		//rxm_open_shm_ep_res(domain, rxm_ep);
+		printf("shm_ep creating ....\n");
+		ret = fi_endpoint(rxm_domain->shm_domain, rxm_fabric->shm_info,
+				  &rxm_ep->shm_ep, NULL);
+		printf("shm_ep created %p, ret %d\n", rxm_ep->shm_ep, ret);
+		if (ret)
+			goto err2;
+		// create a peer srx_context.
+		// need to check the size
+		/*
+		ret = util_ep_srx_context(&rxm_domain->util_domain,
+					  RXM_MSG_SRX_SIZE,
+					  RXM_IOV_LIMIT, rxm_buffer_size,
+					  &rxm_srx_update,
+					  &rxm_ep->util_ep.lock,
+					  &rxm_ep->srx);
+		printf("rxm_ep->srx  %p\n", rxm_ep->srx);
+		*/
+		if (ret)
+			goto err2;
+	}
 
 	rxm_ep->inject_pkt = calloc(1, sizeof(*rxm_ep->inject_pkt) +
 				       rxm_ep->inject_limit);
@@ -1988,4 +2111,39 @@ err1:
 		fi_freeinfo(rxm_ep->rxm_info);
 	free(rxm_ep);
 	return ret;
+}
+
+//SHM
+static int rxm_unexp_start(struct fi_peer_rx_entry *rx_entry)
+{
+	return rxm_handle_rx_buf((struct rxm_rx_buf *) rx_entry->peer_context);
+}
+
+static int rxm_discard(struct fi_peer_rx_entry *rx_entry)
+{
+	return FI_SUCCESS;
+}
+struct fi_ops_srx_peer rxm_srx_peer_ops = {
+	.size = sizeof(struct fi_ops_srx_peer),
+	.start_msg = rxm_unexp_start,
+	.start_tag = rxm_unexp_start,
+	.discard_msg = rxm_discard,
+	.discard_tag = rxm_discard,
+};
+
+
+int rxm_srx_context(struct fid_domain *domain, struct fi_rx_attr *attr,
+                    struct fid_ep **rx_ep, void *context)
+{
+	struct rxm_domain *rxm_domain;
+
+	rxm_domain = container_of(domain, struct rxm_domain,
+				  util_domain.domain_fid);
+
+	if (attr->op_flags & FI_PEER) {
+		rxm_domain->peer_srx = ((struct fi_peer_srx_context *) (context))->srx;
+		rxm_domain->peer_srx->peer_ops = &rxm_srx_peer_ops;
+	}
+
+	return FI_SUCCESS;
 }

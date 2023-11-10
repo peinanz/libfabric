@@ -205,6 +205,7 @@ extern size_t rxm_cq_eq_fairness;
 extern int rxm_passthru;
 extern int force_auto_progress;
 extern int rxm_use_write_rndv;
+extern int rxm_enable_shm;
 extern enum fi_wait_obj def_wait_obj, def_tcp_wait_obj;
 
 struct rxm_ep;
@@ -259,6 +260,9 @@ struct rxm_fabric {
 	struct fi_info *offload_coll_info;
 	struct fid_fabric *util_coll_fabric;
 	struct fid_fabric *offload_coll_fabric;
+
+	struct fi_info *shm_info;
+	struct fid_fabric *shm_fabric;
 };
 
 struct rxm_domain {
@@ -274,6 +278,9 @@ struct rxm_domain {
 	struct fid_domain *util_coll_domain;
 	struct fid_domain *offload_coll_domain;
 	uint64_t offload_coll_mask;
+
+	struct fid_peer_srx *peer_srx;
+	struct fid_domain *shm_domain;
 };
 
 struct rxm_cq {
@@ -281,12 +288,17 @@ struct rxm_cq {
 	struct fid_peer_cq peer_cq;
 	struct fid_cq *util_coll_cq;
 	struct fid_cq *offload_coll_cq;
+
+	struct fid_cq *shm_cq;
 };
 
 struct rxm_eq {
 	struct util_eq util_eq;
 	struct fid_eq *util_coll_eq;
 	struct fid_eq *offload_coll_eq;
+
+	 /* SHM cntr */
+	struct fid_eq *shm_eq;
 };
 
 struct rxm_cntr {
@@ -294,6 +306,9 @@ struct rxm_cntr {
 
 	/* Used in passthru mode */
 	struct fid_cntr *msg_cntr;
+
+	/* SHM cntr */
+	struct fid_cntr *shm_cntr;
 };
 
 
@@ -304,6 +319,9 @@ struct rxm_mr {
 	enum fi_hmem_iface iface;
 	uint64_t device;
 	ofi_mutex_t amo_lock;
+	// SHM
+	struct fid_mr *shm_mr;
+	void *shm_desc;
 };
 
 static inline enum fi_hmem_iface
@@ -593,6 +611,7 @@ struct rxm_deferred_tx_entry {
 };
 
 struct rxm_recv_entry {
+	//struct fi_peer_rx_entry rx_entry;  // SHM
 	struct dlist_entry entry;
 	struct rxm_iov rxm_iov;
 	fi_addr_t addr;
@@ -710,6 +729,12 @@ struct rxm_ep {
 
 	struct rxm_eager_ops	*eager_ops;
 	struct rxm_rndv_ops	*rndv_ops;
+
+	// SHM
+	struct fid_peer_srx  peer_srx;
+	struct fid_ep		*srx;
+	struct fid_ep		*shm_ep;
+	struct fid_ep		*shm_srx;
 };
 
 int rxm_start_listen(struct rxm_ep *ep);
@@ -904,6 +929,9 @@ rxm_ep_format_tx_buf_pkt(struct rxm_conn *rxm_conn, size_t len, uint8_t op,
 	pkt->hdr.data = data;
 }
 
+int
+rxm_fabric_init_shm(struct rxm_fabric *rxm_fabric, struct fi_info *info);
+
 ssize_t
 rxm_send_segment(struct rxm_ep *rxm_ep,
 		 struct rxm_conn *rxm_conn, void *app_context, size_t data_len,
@@ -915,6 +943,11 @@ rxm_send_segment(struct rxm_ep *rxm_ep,
 		 enum fi_hmem_iface iface, uint64_t device);
 ssize_t
 rxm_send_common(struct rxm_ep *rxm_ep, struct rxm_conn *rxm_conn,
+		const struct iovec *iov, void **desc, size_t count,
+		void *context, uint64_t data, uint64_t flags, uint64_t tag,
+		uint8_t op);
+ssize_t
+rxm_send_common_shm(struct rxm_ep *rxm_ep, struct rxm_conn *rxm_conn,
 		const struct iovec *iov, void **desc, size_t count,
 		void *context, uint64_t data, uint64_t flags, uint64_t tag,
 		uint8_t op);
@@ -936,6 +969,8 @@ ssize_t rxm_handle_unexp_sar(struct rxm_recv_queue *recv_queue,
 int rxm_post_recv(struct rxm_rx_buf *rx_buf);
 void rxm_av_remove_handler(struct util_ep *util_ep,
 			   struct util_peer_addr *peer);
+int rxm_srx_context(struct fid_domain *domain, struct fi_rx_attr *attr,
+               struct fid_ep **rx_ep, void *context);
 
 static inline void
 rxm_free_rx_buf(struct rxm_rx_buf *rx_buf)

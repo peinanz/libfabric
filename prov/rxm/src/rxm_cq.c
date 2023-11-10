@@ -1812,6 +1812,8 @@ void rxm_ep_do_progress(struct util_ep *util_ep)
 	uint64_t timestamp;
 	ssize_t ret, i, err;
 
+	struct rxm_cq *rxm_cq = container_of(util_ep->tx_cq, struct rxm_cq, util_cq);
+
 	do {
 		ret = fi_cq_read(rxm_ep->msg_cq, &comp, 32);
 		if (ret > 0) {
@@ -1855,6 +1857,10 @@ void rxm_ep_do_progress(struct util_ep *util_ep)
 			rxm_ep_progress_deferred_queue(rxm_ep, rxm_conn);
 		}
 	}
+
+	// SHM TODO shm need to progress on rx_cq
+	ret = fi_cq_read(rxm_cq->shm_cq, NULL, 0);
+	assert(!ret || ret == -FI_EAGAIN);
 }
 
 void rxm_ep_progress(struct util_ep *util_ep)
@@ -1896,6 +1902,10 @@ static int rxm_cq_close(struct fid *fid)
 
 	if (rxm_cq->util_coll_cq)
 		fi_close(&rxm_cq->util_coll_cq->fid);
+
+	// SHM
+	if (rxm_cq->shm_cq)
+		fi_close(&rxm_cq->shm_cq->fid);
 
 	ret = ofi_cq_cleanup(&rxm_cq->util_cq);
 	if (ret)
@@ -1944,6 +1954,8 @@ int rxm_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr,
 	struct rxm_cq *rxm_cq;
 	struct rxm_domain *rxm_domain;
 	struct fi_cq_attr peer_cq_attr = {
+		.format = FI_CQ_FORMAT_DATA,
+		.wait_obj = FI_WAIT_NONE,
 		.flags = FI_PEER,
 	};
 	struct fi_peer_cq_context peer_cq_context = {
@@ -1982,6 +1994,15 @@ int rxm_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr,
 			goto err2;
 	}
 
+	// SHM
+	if (rxm_domain->shm_domain) {
+		ret = fi_cq_open(rxm_domain->shm_domain, &peer_cq_attr,
+				 &rxm_cq->shm_cq, &peer_cq_context);
+		printf("shm_cq open %p, ret %d\n", rxm_cq->shm_cq, ret);
+		if (ret)
+			goto err2;
+	}
+
 	*cq_fid = &rxm_cq->util_cq.cq_fid;
 	/* Override util_cq_fi_ops */
 	(*cq_fid)->fid.ops = &rxm_cq_fi_ops;
@@ -1989,6 +2010,8 @@ int rxm_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr,
 	return 0;
 
 err2:
+	if (rxm_cq->shm_cq)
+		fi_close(&rxm_cq->shm_cq->fid);
 	if (rxm_cq->util_coll_cq)
 		fi_close(&rxm_cq->util_coll_cq->fid);
 	ofi_cq_cleanup(&rxm_cq->util_cq);

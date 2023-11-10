@@ -152,6 +152,10 @@ rxm_recv_common(struct rxm_ep *rxm_ep, const struct iovec *iov,
 		void **desc, size_t count, fi_addr_t src_addr,
 		void *context, uint64_t op_flags)
 {
+
+	// SHM
+	// should be similar with  util_srx_generic_recv() ???
+
 	struct rxm_recv_entry *recv_entry;
 	struct rxm_rx_buf *rx_buf;
 	ssize_t ret;
@@ -691,6 +695,45 @@ rxm_send_eager(struct rxm_ep *rxm_ep, struct rxm_conn *rxm_conn,
 }
 
 ssize_t
+rxm_send_common_shm(struct rxm_ep *rxm_ep, struct rxm_conn *rxm_conn,
+        const struct iovec *iov, void **desc, size_t count,
+        void *context, uint64_t data, uint64_t flags, uint64_t tag,
+        uint8_t op)
+{
+
+	void *shm_desc[RXM_IOV_LIMIT]; //TODO figure out asserts/align iov limits, sizes, etc
+	struct fi_msg msg;
+	struct fi_msg_tagged tmsg;//TODO merge with msg
+	int i;
+
+	if (desc) {
+		for (i = 0; i < count; i++) {
+			if (desc[i])
+				shm_desc[i] = ((struct rxm_mr *) desc[i])->shm_desc;
+		}
+	}
+	if (op == ofi_op_msg) {
+		msg.addr = rxm_conn->peer->shm_addr;
+		msg.context = context;
+		msg.data = data;
+		msg.desc = shm_desc;
+		msg.iov_count = count;
+		msg.msg_iov = iov;
+		return fi_sendmsg(rxm_ep->shm_ep, &msg, flags);
+	}
+
+	tmsg.addr = rxm_conn->peer->shm_addr;
+	tmsg.context = context;
+	tmsg.data = data;
+	tmsg.desc = shm_desc;
+	tmsg.iov_count = count;
+	tmsg.msg_iov = iov;
+	tmsg.tag = tag;
+
+	return fi_tsendmsg(rxm_ep->shm_ep, &tmsg, flags);
+}
+
+ssize_t
 rxm_send_common(struct rxm_ep *rxm_ep, struct rxm_conn *rxm_conn,
 		const struct iovec *iov, void **desc, size_t count,
 		void *context, uint64_t data, uint64_t flags, uint64_t tag,
@@ -751,6 +794,14 @@ rxm_sendmsg(struct fid_ep *ep_fid, const struct fi_msg *msg, uint64_t flags)
 	if (ret)
 		goto unlock;
 
+	if (rxm_ep->shm_ep && rxm_conn->peer->shm_addr != FI_ADDR_NOTAVAIL) {
+		ofi_genlock_unlock(&rxm_ep->util_ep.lock);
+		return rxm_send_common_shm(rxm_ep, rxm_conn, msg->msg_iov,
+		        msg->desc, msg->iov_count, msg->context,
+		        msg->data, flags | rxm_ep->util_ep.tx_msg_flags,
+		        0, ofi_op_msg);
+	}
+
 	ret = rxm_send_common(rxm_ep, rxm_conn, msg->msg_iov, msg->desc,
 			      msg->iov_count, msg->context, msg->data,
 			      flags | rxm_ep->util_ep.tx_msg_flags,
@@ -778,6 +829,14 @@ rxm_send(struct fid_ep *ep_fid, const void *buf, size_t len,
 	if (ret)
 		goto unlock;
 
+	if (rxm_ep->shm_ep && rxm_conn->peer->shm_addr != FI_ADDR_NOTAVAIL) {
+		ofi_genlock_unlock(&rxm_ep->util_ep.lock);
+		return rxm_send_common_shm(rxm_ep, rxm_conn, &iov, &desc,
+					   1, context, 0,
+					   rxm_ep->util_ep.tx_op_flags,
+					   0, ofi_op_msg);
+	}
+
 	ret = rxm_send_common(rxm_ep, rxm_conn, &iov, &desc, 1, context,
 			      0, rxm_ep->util_ep.tx_op_flags, 0, ofi_op_msg);
 unlock:
@@ -798,6 +857,14 @@ rxm_sendv(struct fid_ep *ep_fid, const struct iovec *iov,
 	ret = rxm_get_conn(rxm_ep, dest_addr, &rxm_conn);
 	if (ret)
 		goto unlock;
+
+	if (rxm_ep->shm_ep && rxm_conn->peer->shm_addr != FI_ADDR_NOTAVAIL) {
+		ofi_genlock_unlock(&rxm_ep->util_ep.lock);
+		return rxm_send_common_shm(rxm_ep, rxm_conn, iov, desc,
+					   count, context, 0,
+					   rxm_ep->util_ep.tx_op_flags,
+					   0, ofi_op_msg);
+	}
 
 	ret = rxm_send_common(rxm_ep, rxm_conn, iov, desc, count, context,
 			      0, rxm_ep->util_ep.tx_op_flags, 0, ofi_op_msg);
@@ -848,6 +915,15 @@ rxm_senddata(struct fid_ep *ep_fid, const void *buf, size_t len,
 	ret = rxm_get_conn(rxm_ep, dest_addr, &rxm_conn);
 	if (ret)
 		goto unlock;
+
+	if (rxm_ep->shm_ep && rxm_conn->peer->shm_addr != FI_ADDR_NOTAVAIL) {
+		ofi_genlock_unlock(&rxm_ep->util_ep.lock);
+		return rxm_send_common_shm(rxm_ep, rxm_conn, &iov, &desc,
+					   1, context, data,
+					   rxm_ep->util_ep.tx_op_flags |
+					   FI_REMOTE_CQ_DATA,
+					   0, ofi_op_msg);
+	}
 
 	ret = rxm_send_common(rxm_ep, rxm_conn, &iov, &desc, 1, context, data,
 			      rxm_ep->util_ep.tx_op_flags | FI_REMOTE_CQ_DATA,

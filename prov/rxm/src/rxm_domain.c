@@ -232,6 +232,7 @@ rxm_av_open(struct fid_domain *domain_fid, struct fi_av_attr *attr,
 	struct fi_av_attr peer_attr = {
 		.flags = FI_PEER,
 	};
+	struct fi_av_attr shm_av_attr;
 	int ret;
 
 	ret = rxm_util_av_open(domain_fid, attr, &fid_av_new,
@@ -245,10 +246,10 @@ rxm_av_open(struct fid_domain *domain_fid, struct fi_av_attr *attr,
 				  util_domain.domain_fid);
 
 	rxm_av->peer_av.fid.fclass = FI_CLASS_PEER_AV;
-        rxm_av->peer_av.fid.ops = &rxm_peer_av_fi_ops;
-        rxm_av->peer_av.owner_ops = &rxm_av_owner_ops;
-        peer_context.size = sizeof(peer_context);
-        peer_context.av = &rxm_av->peer_av;
+	rxm_av->peer_av.fid.ops = &rxm_peer_av_fi_ops;
+	rxm_av->peer_av.owner_ops = &rxm_av_owner_ops;
+	peer_context.size = sizeof(peer_context);
+	peer_context.av = &rxm_av->peer_av;
 
 	if (rxm_domain->util_coll_domain) {
 		ret = fi_av_open(rxm_domain->util_coll_domain, &peer_attr,
@@ -262,6 +263,20 @@ rxm_av_open(struct fid_domain *domain_fid, struct fi_av_attr *attr,
 		if (ret)
 			goto err1;
 	}
+
+	// SHM
+	// do not use peer context?
+	if (rxm_domain->shm_domain) {
+		memset(&shm_av_attr, 0, sizeof(shm_av_attr));
+		shm_av_attr.count = 256; //env or defined
+		shm_av_attr.type = FI_AV_TABLE;
+		ret = fi_av_open(rxm_domain->shm_domain, &shm_av_attr,
+				 &rxm_av->shm_av, context);
+		printf("open rxm_av->shm_av, ret = %d\n", ret);
+		if (ret)
+			goto err1;
+	}
+
 	*fid_av = fid_av_new;
 	return 0;
 
@@ -277,6 +292,10 @@ rxm_cntr_open(struct fid_domain *fid_domain, struct fi_cntr_attr *attr,
 	struct rxm_domain *domain;
 	struct rxm_cntr *cntr;
 	int ret;
+	struct fi_peer_cntr_context peer_context;
+	struct fi_cntr_attr peer_cntr_attr = {
+		.flags = FI_PEER,
+	};
 
 	domain = container_of(fid_domain, struct rxm_domain,
 			      util_domain.domain_fid.fid);
@@ -298,6 +317,21 @@ rxm_cntr_open(struct fid_domain *fid_domain, struct fi_cntr_attr *attr,
 
 		cntr->util_cntr.cntr_fid.fid.ops = &rxm_passthru_cntr_fi_ops;
 		cntr->util_cntr.cntr_fid.ops = &rxm_passthru_cntr_ops;
+	}
+
+	// SHM
+	if (domain->shm_domain) {
+		peer_context.size = sizeof(struct fi_peer_cntr_context);
+		peer_context.cntr = cntr->util_cntr.peer_cntr;
+		peer_cntr_attr.events = attr->events;
+		peer_cntr_attr.wait_obj = attr->wait_obj;
+		peer_cntr_attr.wait_set = attr->wait_set;
+		ret = fi_cntr_open(domain->shm_domain, &peer_cntr_attr,
+				   &cntr->shm_cntr, &peer_context);
+		if (ret) {
+			RXM_WARN_ERR(FI_LOG_CNTR, "fi_cntr_open for shm", ret);
+			goto cleanup;
+		}
 	}
 
 	*cntr_fid = &cntr->util_cntr.cntr_fid;
@@ -346,7 +380,8 @@ static struct fi_ops_domain rxm_domain_ops = {
 	.cntr_open = rxm_cntr_open,
 	.poll_open = fi_poll_create,
 	.stx_ctx = fi_no_stx_context,
-	.srx_ctx = fi_no_srx_context,
+	.srx_ctx = rxm_srx_context,
+	//.srx_ctx = fi_no_srx_context,
 	.query_atomic = rxm_ep_query_atomic,
 	.query_collective = rxm_query_collective,
 };
@@ -407,6 +442,15 @@ static int rxm_domain_close(fid_t fid)
 	if (ret)
 		return ret;
 
+	// SHM
+	if (rxm_domain->shm_domain) {
+		printf("close rxm_domain\n");
+		ret = fi_close(&rxm_domain->shm_domain->fid);
+		if (ret)
+			return ret;
+		rxm_domain->shm_domain = NULL;
+	}
+
 	if (rxm_domain->offload_coll_domain) {
 		ret = fi_close(&rxm_domain->offload_coll_domain->fid);
 		if (ret)
@@ -450,6 +494,13 @@ static int rxm_mr_close(fid_t fid)
 	ret = fi_close(&rxm_mr->msg_mr->fid);
 	if (ret)
 		FI_WARN(&rxm_prov, FI_LOG_DOMAIN, "Unable to close MSG MR\n");
+
+	// SHM
+	if (rxm_mr->shm_mr) {
+		ret = fi_close(&rxm_mr->shm_mr->fid);
+		if (ret)
+			FI_WARN(&rxm_prov, FI_LOG_DOMAIN, "Unable to close SHM MR\n");
+	}
 
 	ofi_atomic_dec32(&rxm_mr->domain->util_domain.ref);
 	free(rxm_mr);
@@ -544,12 +595,15 @@ static void rxm_mr_init(struct rxm_mr *rxm_mr, struct rxm_domain *domain,
 	rxm_mr->mr_fid.mem_desc = rxm_mr;
 	rxm_mr->mr_fid.key = fi_mr_key(rxm_mr->msg_mr);
 	rxm_mr->domain = domain;
+	rxm_mr->shm_mr = NULL;
+	rxm_mr->shm_desc = NULL;
 	ofi_atomic_inc32(&domain->util_domain.ref);
 }
 
 static int rxm_mr_regattr(struct fid *fid, const struct fi_mr_attr *attr,
 			  uint64_t flags, struct fid_mr **mr)
 {
+	struct rxm_fabric *rxm_fabric;
 	struct rxm_domain *rxm_domain;
 	struct fi_mr_attr msg_attr = *attr;
 	struct rxm_mr *rxm_mr;
@@ -589,6 +643,27 @@ static int rxm_mr_regattr(struct fid *fid, const struct fi_mr_attr *attr,
 	rxm_mr->device = msg_attr.device.reserved;
 	*mr = &rxm_mr->mr_fid;
 
+	// SHM
+	if (rxm_domain->shm_domain) {
+		rxm_fabric = container_of(rxm_domain->util_domain.fabric,
+		                          struct rxm_fabric, util_fabric);
+		printf("open shm mr_regattr, mode 0x%x, check 0x%x\n",
+			rxm_fabric->shm_info->domain_attr->mr_mode,
+			(FI_MR_LOCAL | FI_MR_HMEM));
+		if (rxm_fabric->shm_info->domain_attr->mr_mode &
+		    (FI_MR_LOCAL | FI_MR_HMEM)) {
+			ret = fi_mr_regattr(rxm_domain->shm_domain, attr, flags,
+			                    &rxm_mr->shm_mr);
+			printf("shm mr_regattr ret %d\n", ret);
+			if (ret) {
+				FI_WARN(&rxm_prov, FI_LOG_DOMAIN,
+				        "SHM mr regattr failed, ret %d\n", ret);
+				goto map_err;
+			}
+			rxm_mr->shm_desc = fi_mr_desc(rxm_mr->shm_mr);
+		}
+	}
+
 	if (rxm_domain->util_domain.info_domain_caps & FI_ATOMIC) {
 		ret = rxm_mr_add_map_entry(&rxm_domain->util_domain,
 					   &msg_attr, rxm_mr);
@@ -611,6 +686,7 @@ static int rxm_mr_regv(struct fid *fid, const struct iovec *iov, size_t count,
 		       uint64_t access, uint64_t offset, uint64_t requested_key,
 		       uint64_t flags, struct fid_mr **mr, void *context)
 {
+	struct rxm_fabric *rxm_fabric;
 	struct rxm_domain *rxm_domain;
 	struct rxm_mr *rxm_mr;
 	int ret;
@@ -640,6 +716,25 @@ static int rxm_mr_regv(struct fid *fid, const struct iovec *iov, size_t count,
 	}
 	rxm_mr_init(rxm_mr, rxm_domain, context);
 	*mr = &rxm_mr->mr_fid;
+
+	// SHM
+	if (rxm_domain->shm_domain) {
+		printf("shm fi_mr_regv: \n");
+		rxm_fabric = container_of(rxm_domain->util_domain.fabric,
+					  struct rxm_fabric, util_fabric);
+		if (rxm_fabric->shm_info->domain_attr->mr_mode &
+		    (FI_MR_LOCAL | FI_MR_HMEM)) {
+			ret = fi_mr_regv(rxm_domain->shm_domain, iov, count,
+					 access, offset, requested_key, flags,
+					 &rxm_mr->shm_mr, context);
+			if (ret) {
+				FI_WARN(&rxm_prov, FI_LOG_DOMAIN,
+					"Unable to register SHM MR\n");
+				goto map_err;
+			}
+			rxm_mr->shm_desc = fi_mr_desc(rxm_mr->shm_mr);
+		}
+	}
 
 	if (rxm_domain->util_domain.info_domain_caps & FI_ATOMIC) {
 		ret = rxm_mr_add_map_entry(&rxm_domain->util_domain,
@@ -868,6 +963,25 @@ int rxm_domain_open(struct fid_fabric *fabric, struct fi_info *info,
 			      OFI_LOCK_MUTEX);
 	if (ret) {
 		goto err3;
+	}
+
+	// SHM
+	// create shm_fabric here since it needs info
+	// Otherwise, it can move to rxm_fabric().
+	if (rxm_enable_shm && !rxm_fabric->shm_fabric) {
+		ret =  rxm_fabric_init_shm(rxm_fabric, info);
+		if (ret)
+			goto err3;
+	}
+	if (rxm_fabric->shm_fabric) {
+		ret = fi_domain(rxm_fabric->shm_fabric, rxm_fabric->shm_info,
+				 &rxm_domain->shm_domain, context);
+		printf("shm_domain: fi_domain, ret %d\n", ret);
+		if (ret)
+			goto err4;
+		rxm_domain->util_domain.src_addr = calloc(1, info->src_addrlen);
+		memcpy(rxm_domain->util_domain.src_addr, info->src_addr,
+		      info->src_addrlen);
 	}
 
 	if (info->caps & FI_COLLECTIVE) {

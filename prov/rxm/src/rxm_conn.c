@@ -454,6 +454,10 @@ ssize_t rxm_get_conn(struct rxm_ep *ep, fi_addr_t addr, struct rxm_conn **conn)
 	if (!*conn)
 		return -FI_ENOMEM;
 
+	// SHM no need to set up rxm connection if using shm
+	if ((*peer)->shm_addr != FI_ADDR_NOTAVAIL) {
+		return FI_SUCCESS;
+	}
 	if ((*conn)->state == RXM_CM_CONNECTED) {
 		if (!dlist_empty(&(*conn)->deferred_tx_queue)) {
 			rxm_ep_do_progress(&ep->util_ep);
