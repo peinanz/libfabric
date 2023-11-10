@@ -210,6 +210,7 @@ struct util_domain {
 	uint64_t		info_domain_mode;
 	int			mr_mode;
 	uint32_t		addr_format;
+	void			*src_addr;
 	enum fi_av_type		av_type;
 	struct ofi_mr_map	mr_map;
 	enum fi_threading	threading;
@@ -913,6 +914,7 @@ struct util_peer_addr {
 	int index;
 	int refcnt;
 	union ofi_sock_ip addr;
+	fi_addr_t shm_addr;
 };
 
 struct util_peer_addr *util_get_peer(struct rxm_av *av, const void *addr);
@@ -940,6 +942,7 @@ struct rxm_av {
 	struct fid_peer_av peer_av;
 	struct fid_av *util_coll_av;
 	struct fid_av *offload_coll_av;
+	struct fid_av *shm_av;
 };
 
 int rxm_util_av_open(struct fid_domain *domain_fid, struct fi_av_attr *attr,
